@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"coder/internal/config"
 	"coder/internal/customizations"
 	"coder/internal/provider/copilot"
 	"coder/internal/tools"
@@ -79,7 +80,7 @@ func (s *sessionState) cmdHelp() {
 	s.printfOut(`Commands:
   /help                                  List REPL commands
   /login [--host <url>]                  Sign in to GitHub Copilot via browser/device OAuth flow
-  /model [list|<id>]                     Show/list models or switch active model
+  /model [list|<id> [--save]]            List/switch models; --save sets your Copilot default
   /provider [<name> [model]]             List configured providers or switch live provider
   /skills                                List discovered skills
   /skill <name> [--queue]                Load & display a skill (optionally queue for next turn)
@@ -182,7 +183,7 @@ func (s *sessionState) cmdLogin(ctx context.Context, args []string) error {
 }
 
 func (s *sessionState) cmdModel(ctx context.Context, args []string) error {
-	if len(args) == 0 || strings.EqualFold(args[0], "list") {
+	if len(args) == 0 || (len(args) == 1 && strings.EqualFold(args[0], "list")) {
 		curModel := s.rt.Agent.Model()
 		provName := s.rt.Agent.ProviderName()
 		s.printfOut("Active model: %s (provider: %s)\n", curModel, provName)
@@ -217,14 +218,51 @@ func (s *sessionState) cmdModel(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	targetModel := strings.TrimSpace(args[0])
+	if strings.HasPrefix(args[0], "-") || strings.EqualFold(args[0], "list") ||
+		(len(args) > 1 && (len(args) != 2 || args[1] != "--save")) {
+		return fmt.Errorf("usage: /model [list|<id> [--save]]")
+	}
+	targetModel := args[0]
+	save := len(args) == 2
+	if save {
+		if s.rt.Provider == nil || !strings.EqualFold(s.rt.Agent.ProviderName(), "copilot") {
+			return fmt.Errorf("/model --save requires the active Copilot provider")
+		}
+		listCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		models, err := s.rt.Provider.ListModels(listCtx)
+		if err != nil {
+			return fmt.Errorf("validate Copilot model before saving: %w", err)
+		}
+		var found bool
+		for _, m := range models {
+			if strings.EqualFold(m.ID, targetModel) {
+				targetModel, found = m.ID, true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("Copilot model %q is not available; use /model list", targetModel)
+		}
+	}
 	if err := s.rt.Agent.SetModel(ctx, targetModel); err != nil {
 		return err
 	}
-	if s.rt.Config != nil {
-		s.rt.Config.DefaultModel = targetModel
-	}
 	s.printfOut("Switched model to %s (provider: %s)\n", s.rt.Agent.Model(), s.rt.Agent.ProviderName())
+	if !save {
+		return nil
+	}
+	path, err := config.SaveUserCopilotModel(s.rt.UserHome, targetModel)
+	if err != nil {
+		return fmt.Errorf("model switched for this session, but could not save default: %w", err)
+	}
+	s.printfOut("Saved Copilot default %s to %s.\n", targetModel, path)
+	cfg, err := s.rt.StartupConfig()
+	if err != nil {
+		s.printfErr("[note] could not check whether the saved default is overridden: %v\n", err)
+	} else if !strings.EqualFold(cfg.DefaultProvider, "copilot") || !strings.EqualFold(cfg.EffectiveModel("copilot"), targetModel) {
+		s.printfErr("[note] the saved Copilot default is overridden by current startup settings (provider: %s, model: %q). Check top-level and workspace config, environment variables, and CLI flags.\n", cfg.DefaultProvider, cfg.EffectiveModel(cfg.DefaultProvider))
+	}
 	return nil
 }
 

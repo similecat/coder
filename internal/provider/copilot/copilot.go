@@ -391,7 +391,8 @@ func SelectDefaultModel(models []sdk.ModelInfo) string {
 }
 
 // ResolveAvailableModel validates requested against the live Copilot model catalog.
-// When requested is empty/"default" or unavailable in models, it smartly selects the best enabled model.
+// An unavailable explicit model falls back to Auto when enabled; an empty/default
+// request keeps the existing coding-model preference order.
 func ResolveAvailableModel(requested string, models []sdk.ModelInfo) (chosen string, fellBack bool) {
 	req := strings.TrimSpace(requested)
 	if len(models) == 0 {
@@ -403,6 +404,11 @@ func ResolveAvailableModel(requested string, models []sdk.ModelInfo) (chosen str
 	for _, m := range models {
 		if IsModelEnabled(m) && strings.EqualFold(m.ID, req) {
 			return m.ID, false
+		}
+	}
+	for _, m := range models {
+		if IsModelEnabled(m) && strings.EqualFold(m.ID, "auto") {
+			return m.ID, true
 		}
 	}
 	return SelectDefaultModel(models), true

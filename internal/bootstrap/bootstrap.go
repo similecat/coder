@@ -37,14 +37,20 @@ type Options struct {
 
 // Runtime bundles the active Agent, Config, Customizations, Permission Gate, and Toolset.
 type Runtime struct {
-	WorkspaceDir   string
-	UserHome       string
-	Config         *config.Config
-	Customizations *customizations.Bundle
-	Gate           *permissions.Gate
-	Toolset        *tools.Toolset
-	Provider       types.Provider
-	Agent          *agent.Agent
+	WorkspaceDir     string
+	UserHome         string
+	Config           *config.Config
+	Customizations   *customizations.Bundle
+	Gate             *permissions.Gate
+	Toolset          *tools.Toolset
+	Provider         types.Provider
+	Agent            *agent.Agent
+	startupOverrides config.Overrides
+}
+
+// StartupConfig re-reads the configuration using the original command-line overrides.
+func (r *Runtime) StartupConfig() (*config.Config, error) {
+	return config.Load(r.WorkspaceDir, r.UserHome, r.startupOverrides)
 }
 
 // Build loads config, discovers instructions/skills/custom tools, sets up permissions & native tools,
@@ -178,34 +184,22 @@ func Build(opts Options) (*Runtime, error) {
 			go func(reqModel string) {
 				resolveCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
-				resolved, fellBack, resErr := resolver.ResolveModel(resolveCtx, reqModel)
-				if resErr == nil && resolved != "" {
-					if ag.Model() == reqModel {
-						_ = ag.SetModel(resolveCtx, resolved)
-					}
-					if fellBack && strings.TrimSpace(opts.Overrides.Model) == "" {
-						if prof, exists := cfg.Providers[providerName]; exists && prof.DefaultModel != "" {
-							prof.DefaultModel = ""
-							cfg.Providers[providerName] = prof
-							if cfg.DefaultModel == "" && userHome != "" {
-								_ = config.SaveUserConfig(userHome, cfg)
-							}
-						}
-					}
-				}
+				// Warm the catalog only; session creation resolves the current selection.
+				_, _, _ = resolver.ResolveModel(resolveCtx, reqModel)
 			}(model)
 		}
 	}
 
 	return &Runtime{
-		WorkspaceDir:   ws,
-		UserHome:       userHome,
-		Config:         cfg,
-		Customizations: bundle,
-		Gate:           gate,
-		Toolset:        ts,
-		Provider:       prov,
-		Agent:          ag,
+		WorkspaceDir:     ws,
+		UserHome:         userHome,
+		Config:           cfg,
+		Customizations:   bundle,
+		Gate:             gate,
+		Toolset:          ts,
+		Provider:         prov,
+		Agent:            ag,
+		startupOverrides: opts.Overrides,
 	}, nil
 }
 

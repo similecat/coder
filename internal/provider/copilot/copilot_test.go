@@ -319,6 +319,8 @@ type fakeSDKClient struct {
 	stops      atomic.Int32
 	authStatus *sdk.GetAuthStatusResponse
 	sessHook   func(cfg *sdk.SessionConfig) *fakeSDKSession
+	catalog    []sdk.ModelInfo
+	createErr  func(model string) error
 }
 
 func (c *fakeSDKClient) GetAuthStatus(ctx context.Context) (*sdk.GetAuthStatusResponse, error) {
@@ -343,10 +345,18 @@ func (c *fakeSDKClient) ForceStop() {
 }
 
 func (c *fakeSDKClient) CreateSession(ctx context.Context, cfg *sdk.SessionConfig) (sdkSession, error) {
+	if c.createErr != nil {
+		if err := c.createErr(cfg.Model); err != nil {
+			return nil, err
+		}
+	}
 	return c.sessHook(cfg), nil
 }
 
 func (c *fakeSDKClient) ListModels(ctx context.Context) ([]sdk.ModelInfo, error) {
+	if c.catalog != nil {
+		return c.catalog, nil
+	}
 	ctxWin := 200000
 	return []sdk.ModelInfo{{
 		ID:   "claude-sonnet-4.5",
@@ -552,10 +562,14 @@ func TestSelectDefaultModelAndFallbackWhenUnavailable(t *testing.T) {
 		t.Fatalf("expected gpt-5.3-codex (skipping disabled-codex and auto), got %q", picked)
 	}
 
-	// Unavailable stale model ("claude-sonnet-4.5") must fall back to gpt-5.3-codex
 	chosen, fellBack := ResolveAvailableModel("claude-sonnet-4.5", catalog)
+	if !fellBack || chosen != "auto" {
+		t.Fatalf("expected fallback to auto, got chosen=%q fellBack=%v", chosen, fellBack)
+	}
+	catalog[0].Policy = &sdk.ModelPolicy{State: "disabled"}
+	chosen, fellBack = ResolveAvailableModel("claude-sonnet-4.5", catalog)
 	if !fellBack || chosen != "gpt-5.3-codex" {
-		t.Fatalf("expected fallback to gpt-5.3-codex, got chosen=%q fellBack=%v", chosen, fellBack)
+		t.Fatalf("expected coding model when Auto is disabled, got chosen=%q fellBack=%v", chosen, fellBack)
 	}
 
 	// Explicit available model ("gpt-6.2-sol") is preserved
@@ -564,5 +578,3 @@ func TestSelectDefaultModelAndFallbackWhenUnavailable(t *testing.T) {
 		t.Fatalf("expected exact gpt-6.2-sol without fallback, got chosen=%q fellBack=%v", chosen2, fellBack2)
 	}
 }
-
-

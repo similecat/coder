@@ -247,6 +247,10 @@ func SaveUserConfig(userHome string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	return writeUserConfig(cfgPath, cfg)
+}
+
+func writeUserConfig(cfgPath string, cfg any) error {
 	dir := filepath.Dir(cfgPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create user config dir %s: %w", dir, err)

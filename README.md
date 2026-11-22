@@ -215,13 +215,16 @@ Drop JSON tool specifications into `<repo>/.coder/tools/*.json` or `~/.coder/too
 | `/help` | Show available slash commands and keybindings |
 | `/login [--host <url>]` | Sign in to GitHub Copilot via browser/device OAuth and reload session |
 | `/provider [name] [model]` | Show active backend or switch provider (e.g. `/provider lmstudio`) |
-| `/model [id]` | Show or switch the active model ID in place |
+| `/model`, `/model list` | Show the active model and models available from the current provider |
+| `/model <id> [--save]` | Switch models; `--save` also saves a Copilot default for future sessions |
 | `/mode [smart_auto\|full_auto\|strict_ask]` | View or change tool approval policy |
 | `/skills` | List discovered `.coder` and Copilot skills |
 | `/instructions` | List active global and `applyTo`-matched instruction files |
 | `/compact` | Trim bulky older tool outputs in conversation history |
 | `/clear` | Reset conversation context while keeping provider client warm |
 | `/exit` / `/quit` | Exit the REPL cleanly |
+
+In the Copilot REPL, use `/model list` and then `/model <id> --save` to switch and save the model in your user `~/.coder/config.json`. Without `--save`, the switch is session-only. Top-level `default_model`, workspace settings, `CODER_MODEL`, or `-m` can override the saved Copilot preference. If the preferred model becomes unavailable, Coder tries Copilot Auto when offered without changing the saved preference.
 
 ---
 

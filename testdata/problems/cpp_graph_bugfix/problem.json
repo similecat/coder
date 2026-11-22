@@ -1,0 +1,12 @@
+{
+  "id": "cpp_graph_bugfix",
+  "language": "cpp",
+  "title": "C++20 Shortest-Path Router Bugfix (Overflow, Tie-Break, Path Reconstruction)",
+  "prompt": "Fix the bugs in `graph_router.hpp` and `graph_router.cpp` (`routing::GraphRouter`).\n\nSpecification:\n- `GraphRouter(int num_nodes)`: constructs a directed weighted graph with nodes `0 .. num_nodes - 1` (throws `std::invalid_argument` if `num_nodes <= 0`).\n- `void add_edge(int u, int v, int64_t weight)`:\n  - Throws `std::out_of_range` if `u` or `v` is outside `[0, num_nodes - 1]`.\n  - Throws `std::invalid_argument` if `weight < 0`.\n- `std::optional<RouteResult> shortest_path(int src, int dst) const`:\n  - Throws `std::out_of_range` if `src` or `dst` is outside `[0, num_nodes - 1]`.\n  - Returns `std::nullopt` if `dst` is unreachable from `src`.\n  - If `src == dst`, returns `RouteResult{0, {src}}`.\n  - Supports 64-bit path costs without signed 32-bit overflow (e.g. paths exceeding `5 * 10^9`).\n  - Deterministic tie-breaking among equal-cost minimum paths:\n    1. Minimum `total_cost`\n    2. Fewest nodes (`path.size()`, i.e. fewest hops)\n    3. Lexicographically smallest node sequence `path` from `src` to `dst` (`std::vector<int>` `<` comparison).\n  - `RouteResult::path` must list the exact vertex sequence from `src` to `dst` inclusive.\n\nEnsure everything compiles cleanly with C++20 under `/W4` or `-Wall -Wextra`.",
+  "timeout_sec": 180,
+  "copilot_compat_required": false,
+  "verify_entry": "verify/verify_main.cpp",
+  "cpp_sources": [
+    "graph_router.cpp"
+  ]
+}

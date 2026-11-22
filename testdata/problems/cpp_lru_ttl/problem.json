@@ -1,0 +1,10 @@
+{
+  "id": "cpp_lru_ttl",
+  "language": "cpp",
+  "title": "C++20 O(1) LRU Cache with TTL Expiration",
+  "prompt": "Implement `template <typename K, typename V> class TTLLRUCache` in `lru_cache.hpp` (C++20, header-only).\n\nRequired API and semantics:\n- `explicit TTLLRUCache(size_t capacity)` and `size_t capacity() const noexcept`.\n- `void put(const K& key, V value, int64_t ttl_ms, int64_t now_ms = 0)`:\n  - Inserts or updates `key` with `value` expiring at `expiry_ms = now_ms + ttl_ms`.\n  - An entry is expired whenever `query_now_ms >= expiry_ms`.\n  - If `capacity == 0`, stores nothing.\n  - If `ttl_ms <= 0`, the entry is already expired at `now_ms`: remove `key` if it currently exists and do not store it.\n  - If `key` already exists (and `ttl_ms > 0`), overwrite its value and `expiry_ms` and promote it to most-recently-used (MRU).\n  - When inserting a new key at capacity, evict expired entries (at `now_ms`) before evicting any live entry; if still at capacity, evict the least-recently-used (LRU) live entry.\n- `std::optional<V> get(const K& key, int64_t now_ms)`:\n  - O(1) lookup. If `key` is missing or expired (`now_ms >= expiry_ms`), remove the expired entry if present and return `std::nullopt`.\n  - Otherwise promote `key` to MRU and return its value.\n- `bool erase(const K& key)`:\n  - Removes `key` if stored in the cache and returns `true`, or `false` if not present.\n- `size_t purge_expired(int64_t now_ms)`:\n  - Removes all currently stored entries with `expiry_ms <= now_ms` and returns the number of entries removed by this call.\n- `size_t size(int64_t now_ms)`:\n  - Returns the exact count of non-expired entries at `now_ms`.\n\nPerformance requirement: `get` must be O(1) and `put`/`purge_expired` must avoid O(N) full-cache scans on un-expired entries (50,000 mixed operations at capacity 4,096 must finish well under 500ms). Ensure clean C++20 compilation under `/W4` or `-Wall -Wextra`.",
+  "timeout_sec": 180,
+  "copilot_compat_required": false,
+  "verify_entry": "verify/verify_main.cpp",
+  "cpp_sources": []
+}

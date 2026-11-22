@@ -1,0 +1,22 @@
+# Binaries and build artifacts
+coder.exe
+coder
+*.exe
+*.dll
+*.so
+*.dylib
+*.obj
+*.pdb
+*.ilk
+*.out
+bin/
+dist/
+
+# Test and coverage
+*.test
+*.cov
+coverage.out
+
+# Local scratch
+.coder/sessions/
+tmp/

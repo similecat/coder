@@ -1,0 +1,9 @@
+{
+  "id": "py_copilot_skill_compat",
+  "language": "python",
+  "title": "Telemetry Packet Codec via Copilot Instructions & Skill Compatibility",
+  "prompt": "Implement `encode_packet` and `decode_packet` in `codec.py` according to this repository's `telemetry-codec` skill and project instructions.",
+  "timeout_sec": 180,
+  "copilot_compat_required": true,
+  "verify_entry": "verify/verify_suite.py"
+}

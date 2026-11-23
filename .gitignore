@@ -1,6 +1,6 @@
 # Binaries and build artifacts
-coder.exe
-coder
+/coder.exe
+/coder
 *.exe
 *.dll
 *.so

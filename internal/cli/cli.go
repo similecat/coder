@@ -826,7 +826,7 @@ func runConfigCommand(
 			_, _ = fmt.Fprintf(stderr, "coder config show: %v\n", err)
 			return 1
 		}
-		// Resolve effective API keys on cloned provider profiles, then redact every secret before printing.
+		// Redact every secret before printing.
 		redacted := redactConfigForDisplay(cfg)
 		encoded, err := json.MarshalIndent(redacted, "", "  ")
 		if err != nil {
@@ -835,6 +835,9 @@ func runConfigCommand(
 		}
 		_, _ = stdout.Write(append(encoded, '\n'))
 		return 0
+
+	case "save":
+		return runConfigSave(wsDir, userHome, parsed, stdout, stderr)
 
 	case "path", "paths":
 		userPath, userErr := config.UserConfigPath(userHome)
@@ -849,39 +852,68 @@ func runConfigCommand(
 		return runConfigInit(wsDir, userHome, parsed, stdout, stderr)
 
 	default:
-		_, _ = fmt.Fprintf(stderr, "coder config: unknown action %q (expected show, init, or path)\n", action)
+		_, _ = fmt.Fprintf(stderr, "coder config: unknown action %q (expected show, save, init, or path)\n", action)
 		return 2
 	}
 }
 
 func redactConfigForDisplay(cfg *config.Config) *config.Config {
-	if cfg == nil {
-		return nil
+	return cfg.Redacted()
+}
+
+func runConfigSave(
+	wsDir string,
+	userHome string,
+	parsed parsedCLI,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	cfg, err := config.Load(wsDir, userHome, parsed.overrides)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "coder config save: %v\n", err)
+		return 1
 	}
-	cp := *cfg
-	if len(cfg.Providers) > 0 {
-		cp.Providers = make(map[string]types.ProviderProfile, len(cfg.Providers))
-		for k, prof := range cfg.Providers {
-			cloned := prof
-			// Also check if ResolveProvider resolves an env key so callers know a key is configured without leaking it.
-			if strings.TrimSpace(cloned.APIKey) != "" {
-				cloned.APIKey = "***REDACTED***"
-			}
-			if len(prof.Headers) > 0 {
-				cloned.Headers = make(map[string]string, len(prof.Headers))
-				for hk, hv := range prof.Headers {
-					lowerHK := strings.ToLower(hk)
-					if hv != "" && (strings.Contains(lowerHK, "authorization") || strings.Contains(lowerHK, "api-key") || strings.Contains(lowerHK, "token")) {
-						cloned.Headers[hk] = "***REDACTED***"
-					} else {
-						cloned.Headers[hk] = hv
-					}
-				}
-			}
-			cp.Providers[k] = cloned
-		}
+
+	snap := cfg.SnapshotEffective()
+	savedPath, err := config.SaveUserSessionConfig(userHome, snap)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "coder config save: %v\n", err)
+		return 1
 	}
-	return &cp
+
+	dispModel := snap.Model
+	if dispModel == "" {
+		dispModel = "auto"
+	}
+	compatLabel := "off"
+	if snap.Compatibility.LoadCopilotInstructions || snap.Compatibility.LoadCopilotSkills {
+		compatLabel = "on"
+	}
+	_, _ = fmt.Fprintf(
+		stdout,
+		"Saved configuration to %s (provider=%s, model=%s, mode=%s, compat=%s).\n",
+		savedPath,
+		snap.Provider,
+		dispModel,
+		snap.ApprovalPolicy,
+		compatLabel,
+	)
+
+	if strings.TrimSpace(parsed.overrides.APIKey) != "" || strings.TrimSpace(os.Getenv("CODER_API_KEY")) != "" {
+		_, _ = fmt.Fprintf(stderr, "[note] transient API key from --api-key / CODER_API_KEY was omitted from %s.\n", savedPath)
+	}
+
+	nextCfg, err := config.Load(wsDir, userHome, config.Overrides{})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[note] could not verify next-session precedence: %v\n", err)
+	} else if shadowed := config.ShadowedFields(nextCfg, snap); len(shadowed) > 0 {
+		_, _ = fmt.Fprintf(
+			stderr,
+			"[note] saved user profile settings are overridden in this workspace/environment (%s). Check workspace .coder/config.json and CODER_* environment variables.\n",
+			strings.Join(shadowed, ", "),
+		)
+	}
+	return 0
 }
 
 func runConfigInit(
@@ -1024,10 +1056,11 @@ Flags:
       --stream[=<true|false>]    Enable/disable provider streaming (default: false)
 `)
 	case "config":
-		_, _ = fmt.Fprint(w, `Usage: coder config [show|init|path] [flags]
+		_, _ = fmt.Fprint(w, `Usage: coder config [show|save|init|path] [flags]
 
 Subcommands:
   show     Print resolved merged JSON configuration (API keys redacted)
+  save     Save current effective configuration to ~/.coder/config.json
   init     Write a starter .coder/config.json (--user for ~/.coder/config.json, --force to overwrite)
   path     Print user and workspace configuration file paths
 `)
@@ -1055,7 +1088,7 @@ Usage:
   coder repl [flags]                  Start interactive REPL (alias: chat)
   coder login [--host <url>]          Sign in to GitHub Copilot via OAuth device/browser flow
   coder doctor [flags]                Run environment, provider, and toolchain diagnostics
-  coder config [show|init|path]       Inspect or initialize .coder configuration
+  coder config [show|save|init|path]  Inspect, save, or initialize .coder configuration
   coder bench [flags]                 Run automated C++ / Python coding benchmark suite
 
 Global Flags:

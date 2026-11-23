@@ -53,6 +53,74 @@ func (r *Runtime) StartupConfig() (*config.Config, error) {
 	return config.Load(r.WorkspaceDir, r.UserHome, r.startupOverrides)
 }
 
+// NextSessionConfig re-reads the configuration without transient command-line overrides,
+// modeling how a fresh session in this workspace/environment will resolve configuration.
+func (r *Runtime) NextSessionConfig() (*config.Config, error) {
+	return config.Load(r.WorkspaceDir, r.UserHome, config.Overrides{})
+}
+
+// HasAPIKeyOverride reports whether an explicit CLI --api-key override was supplied at startup.
+func (r *Runtime) HasAPIKeyOverride() bool {
+	if r == nil {
+		return false
+	}
+	return strings.TrimSpace(r.startupOverrides.APIKey) != ""
+}
+
+// EffectiveConfig returns a cloned Config synchronized with the live Agent's provider and configured model.
+func (r *Runtime) EffectiveConfig() *config.Config {
+	var base *config.Config
+	if r != nil && r.Config != nil {
+		base = r.Config.Clone()
+	} else {
+		base = config.DefaultConfig()
+	}
+	if r != nil && r.Agent != nil {
+		provName := strings.TrimSpace(r.Agent.ProviderName())
+		cfgModel := strings.TrimSpace(r.Agent.ConfiguredModel())
+		if provName != "" {
+			base.DefaultProvider = provName
+		}
+		base.DefaultModel = ""
+		if provName != "" {
+			if base.Providers == nil {
+				base.Providers = make(map[string]types.ProviderProfile)
+			}
+			if key, existing, ok := base.LookupProvider(provName); ok {
+				existing.DefaultModel = cfgModel
+				base.Providers[key] = existing
+			} else {
+				base.Providers[provName] = types.ProviderProfile{
+					Name:         provName,
+					Type:         types.ProviderTypeOpenAICompat,
+					DefaultModel: cfgModel,
+				}
+			}
+		}
+	}
+	return base
+}
+
+// SnapshotSessionConfig captures the live session's effective configuration for saving to the user profile.
+func (r *Runtime) SnapshotSessionConfig() config.SessionSnapshot {
+	if r == nil {
+		return config.DefaultConfig().SnapshotEffective()
+	}
+	provName := ""
+	cfgModel := ""
+	if r.Agent != nil {
+		provName = r.Agent.ProviderName()
+		cfgModel = r.Agent.ConfiguredModel()
+	} else if r.Config != nil {
+		provName = r.Config.DefaultProvider
+		cfgModel = r.Config.EffectiveModel(provName)
+	}
+	if r.Config == nil {
+		return config.DefaultConfig().Snapshot(provName, cfgModel)
+	}
+	return r.Config.Snapshot(provName, cfgModel)
+}
+
 // Build loads config, discovers instructions/skills/custom tools, sets up permissions & native tools,
 // instantiates the configured provider, and returns a ready-to-run Runtime.
 func Build(opts Options) (*Runtime, error) {
@@ -223,6 +291,14 @@ func (r *Runtime) SwitchProvider(providerName string, modelOverride string) erro
 		return err
 	}
 	r.Provider = newProv
+	if r.Config != nil {
+		r.Config.DefaultProvider = r.Agent.ProviderName()
+		r.Config.DefaultModel = ""
+		if key, existing, ok := r.Config.LookupProvider(r.Agent.ProviderName()); ok {
+			existing.DefaultModel = r.Agent.ConfiguredModel()
+			r.Config.Providers[key] = existing
+		}
+	}
 	if oldProv != nil && oldProv != newProv {
 		_ = oldProv.Close()
 	}

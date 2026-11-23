@@ -214,17 +214,19 @@ Drop JSON tool specifications into `<repo>/.coder/tools/*.json` or `~/.coder/too
 | --- | --- |
 | `/help` | Show available slash commands and keybindings |
 | `/login [--host <url>]` | Sign in to GitHub Copilot via browser/device OAuth and reload session |
-| `/provider [name] [model]` | Show active backend or switch provider (e.g. `/provider lmstudio`) |
+| `/config [show\|save\|path]` | View live session config (redacted) or save it to `~/.coder/config.json` |
+| `/provider [name] [model] [--save]` | Show active backend or switch provider (add `--save` to persist session config) |
 | `/model`, `/model list` | Show the active model and models available from the current provider |
-| `/model <id> [--save]` | Switch models; `--save` also saves a Copilot default for future sessions |
-| `/mode [smart_auto\|full_auto\|strict_ask]` | View or change tool approval policy |
+| `/model <id> [--save]` | Switch models; `--save` also saves the provider's default model for future sessions |
+| `/mode [smart_auto\|full_auto\|strict_ask] [--save]` | View or change tool approval policy (add `--save` to persist) |
+| `/compat [on\|off] [--save]` | Toggle Copilot instructions/skills compatibility & reload (add `--save` to persist) |
 | `/skills` | List discovered `.coder` and Copilot skills |
 | `/instructions` | List active global and `applyTo`-matched instruction files |
 | `/compact` | Trim bulky older tool outputs in conversation history |
 | `/clear` | Reset conversation context while keeping provider client warm |
 | `/exit` / `/quit` | Exit the REPL cleanly |
 
-In the Copilot REPL, use `/model list` and then `/model <id> --save` to switch and save the model in your user `~/.coder/config.json`. Without `--save`, the switch is session-only. Top-level `default_model`, workspace settings, `CODER_MODEL`, or `-m` can override the saved Copilot preference. If the preferred model becomes unavailable, Coder tries Copilot Auto when offered without changing the saved preference.
+Use `/config save` inside any session (or `coder [flags] config save` on the CLI) to persist the current session's provider, model, approval policy, compatibility toggles, streaming, reasoning effort, step limits, and custom `--base-url` into your user `~/.coder/config.json` without clobbering unrelated profiles or leaking transient `--api-key` / `CODER_API_KEY` secrets. Workspace `.coder/config.json`, `CODER_*` environment variables, or CLI flags still take higher precedence when present.
 
 ---
 

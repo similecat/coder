@@ -348,6 +348,149 @@ func (c *Config) EffectiveModel(providerName string) string {
 	return prof.DefaultModel
 }
 
+// Clone returns a deep copy of Config including all provider profiles and headers.
+func (c *Config) Clone() *Config {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	if c.Providers != nil {
+		cp.Providers = make(map[string]types.ProviderProfile, len(c.Providers))
+		for k, prof := range c.Providers {
+			cp.Providers[k] = cloneProviderProfile(prof)
+		}
+	}
+	return &cp
+}
+
+// IsSensitiveHeaderKey reports whether an HTTP/provider header name may carry credentials.
+func IsSensitiveHeaderKey(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(lower, "authorization") ||
+		strings.Contains(lower, "api-key") ||
+		strings.Contains(lower, "token")
+}
+
+// Redacted returns a deep copy of Config with all API keys and credential headers masked.
+func (c *Config) Redacted() *Config {
+	cp := c.Clone()
+	if cp == nil {
+		return nil
+	}
+	for k, prof := range cp.Providers {
+		if strings.TrimSpace(prof.APIKey) != "" {
+			prof.APIKey = "***REDACTED***"
+		}
+		for hk, hv := range prof.Headers {
+			if hv != "" && IsSensitiveHeaderKey(hk) {
+				prof.Headers[hk] = "***REDACTED***"
+			}
+		}
+		cp.Providers[k] = prof
+	}
+	return cp
+}
+
+// LookupProvider performs a case-insensitive lookup in c.Providers, returning the map key and cloned profile.
+func (c *Config) LookupProvider(name string) (string, types.ProviderProfile, bool) {
+	if c == nil {
+		return "", types.ProviderProfile{}, false
+	}
+	key, prof, ok := lookupProvider(c.Providers, name)
+	if !ok {
+		return "", types.ProviderProfile{}, false
+	}
+	return key, cloneProviderProfile(prof), true
+}
+
+// Snapshot builds a SessionSnapshot for activeProvider and activeModel from c.
+func (c *Config) Snapshot(activeProvider, activeModel string) SessionSnapshot {
+	if c == nil {
+		c = DefaultConfig()
+	}
+	prov := strings.TrimSpace(activeProvider)
+	if prov == "" {
+		prov = strings.TrimSpace(c.DefaultProvider)
+	}
+	snap := SessionSnapshot{
+		Provider:          prov,
+		Model:             strings.TrimSpace(activeModel),
+		ApprovalPolicy:    c.ApprovalPolicy,
+		MaxSteps:          c.MaxSteps,
+		MaxOutputBytes:    c.MaxOutputBytes,
+		CommandTimeoutSec: c.CommandTimeoutSec,
+		ReasoningEffort:   strings.TrimSpace(c.ReasoningEffort),
+		Streaming:         c.Streaming,
+		Compatibility:     c.Compatibility,
+	}
+	if _, prof, ok := lookupProvider(c.Providers, prov); ok {
+		cloned := cloneProviderProfile(prof)
+		cloned.APIKey = ""
+		if len(cloned.Headers) > 0 {
+			for hk := range cloned.Headers {
+				if IsSensitiveHeaderKey(hk) {
+					delete(cloned.Headers, hk)
+				}
+			}
+		}
+		snap.ProviderProfile = &cloned
+	}
+	return snap
+}
+
+// SnapshotEffective builds a SessionSnapshot using c.DefaultProvider and c.EffectiveModel.
+func (c *Config) SnapshotEffective() SessionSnapshot {
+	if c == nil {
+		c = DefaultConfig()
+	}
+	return c.Snapshot(c.DefaultProvider, c.EffectiveModel(c.DefaultProvider))
+}
+
+// ShadowedFields compares a newly reloaded next-session Config (without CLI overrides)
+// against snap and returns human-readable descriptions of any settings overridden by
+// workspace config or CODER_* environment variables.
+func ShadowedFields(nextCfg *Config, snap SessionSnapshot) []string {
+	if nextCfg == nil {
+		return nil
+	}
+	var diffs []string
+	if !strings.EqualFold(strings.TrimSpace(nextCfg.DefaultProvider), strings.TrimSpace(snap.Provider)) {
+		diffs = append(diffs, fmt.Sprintf("default_provider=%q", nextCfg.DefaultProvider))
+	}
+	if nextModel := strings.TrimSpace(nextCfg.EffectiveModel(snap.Provider)); !strings.EqualFold(nextModel, strings.TrimSpace(snap.Model)) {
+		diffs = append(diffs, fmt.Sprintf("model=%q", nextModel))
+	}
+	if snap.ApprovalPolicy != "" && nextCfg.ApprovalPolicy != snap.ApprovalPolicy {
+		diffs = append(diffs, fmt.Sprintf("approval_policy=%s", nextCfg.ApprovalPolicy))
+	}
+	if nextCfg.Compatibility != snap.Compatibility {
+		diffs = append(diffs, "compatibility")
+	}
+	if nextCfg.Streaming != snap.Streaming {
+		diffs = append(diffs, fmt.Sprintf("streaming=%t", nextCfg.Streaming))
+	}
+	if strings.TrimSpace(nextCfg.ReasoningEffort) != strings.TrimSpace(snap.ReasoningEffort) {
+		diffs = append(diffs, fmt.Sprintf("reasoning_effort=%q", nextCfg.ReasoningEffort))
+	}
+	if snap.MaxSteps > 0 && nextCfg.MaxSteps != snap.MaxSteps {
+		diffs = append(diffs, fmt.Sprintf("max_steps=%d", nextCfg.MaxSteps))
+	}
+	if snap.MaxOutputBytes > 0 && nextCfg.MaxOutputBytes != snap.MaxOutputBytes {
+		diffs = append(diffs, fmt.Sprintf("max_output_bytes=%d", nextCfg.MaxOutputBytes))
+	}
+	if snap.CommandTimeoutSec > 0 && nextCfg.CommandTimeoutSec != snap.CommandTimeoutSec {
+		diffs = append(diffs, fmt.Sprintf("command_timeout_sec=%d", nextCfg.CommandTimeoutSec))
+	}
+	if snap.ProviderProfile != nil {
+		if nextProf, err := nextCfg.ResolveProvider(snap.Provider); err == nil {
+			if strings.TrimSpace(nextProf.BaseURL) != strings.TrimSpace(snap.ProviderProfile.BaseURL) {
+				diffs = append(diffs, fmt.Sprintf("base_url=%q", nextProf.BaseURL))
+			}
+		}
+	}
+	return diffs
+}
+
 type partialCompatibility struct {
 	LoadCopilotInstructions *bool `json:"load_copilot_instructions"`
 	LoadCopilotSkills       *bool `json:"load_copilot_skills"`

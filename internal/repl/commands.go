@@ -2,7 +2,9 @@ package repl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +36,9 @@ func (s *sessionState) handleSlashCommand(ctx context.Context, line string) (exi
 
 	case "/login":
 		return false, s.cmdLogin(ctx, args)
+
+	case "/config":
+		return false, s.cmdConfig(args)
 
 	case "/model":
 		return false, s.cmdModel(ctx, args)
@@ -80,18 +85,118 @@ func (s *sessionState) cmdHelp() {
 	s.printfOut(`Commands:
   /help                                  List REPL commands
   /login [--host <url>]                  Sign in to GitHub Copilot via browser/device OAuth flow
-  /model [list|<id> [--save]]            List/switch models; --save sets your Copilot default
-  /provider [<name> [model]]             List configured providers or switch live provider
+  /config [show|save|path]               View live session config or save it to ~/.coder/config.json
+  /model [list|<id> [--save]]            List/switch models; --save sets provider default
+  /provider [<name> [model] [--save]]    List configured providers or switch live provider
   /skills                                List discovered skills
   /skill <name> [--queue]                Load & display a skill (optionally queue for next turn)
   /instructions                          List loaded global & path-scoped instruction files
   /tools                                 List registered built-in and custom tools
-  /mode [smart_auto|full_auto|strict_ask] View or change live permission policy
-  /compat [on|off]                       Toggle Copilot instructions/skills compatibility & reload
+  /mode [smart_auto|full_auto|strict_ask] [--save] View or change live permission policy
+  /compat [on|off] [--save]              Toggle Copilot instructions/skills compatibility & reload
   /compact [keep_turns]                  Compact conversation history and report reclaimed chars
   /clear                                 Reset conversation history (keeps provider warm)
   /exit, /quit                           Exit REPL (or press Ctrl+D)
 `)
+}
+
+func extractSaveFlag(args []string) (cleaned []string, save bool, err error) {
+	cleaned = make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--save" {
+			save = true
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			return nil, false, fmt.Errorf("unknown flag %q", a)
+		}
+		cleaned = append(cleaned, a)
+	}
+	return cleaned, save, nil
+}
+
+func (s *sessionState) cmdConfig(args []string) error {
+	action := "show"
+	if len(args) > 0 {
+		if len(args) > 1 || strings.HasPrefix(args[0], "-") {
+			return fmt.Errorf("usage: /config [show|save|path]")
+		}
+		action = strings.ToLower(strings.TrimSpace(args[0]))
+	}
+
+	switch action {
+	case "show":
+		eff := s.rt.EffectiveConfig().Redacted()
+		encoded, err := json.MarshalIndent(eff, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal session config: %w", err)
+		}
+		s.printfOut("%s\n", string(encoded))
+		return nil
+
+	case "save":
+		return s.saveSessionConfig()
+
+	case "path", "paths":
+		userPath, userErr := config.UserConfigPath(s.rt.UserHome)
+		if userErr != nil {
+			userPath = fmt.Sprintf("(unavailable: %v)", userErr)
+		}
+		wsPath := config.WorkspaceConfigPath(s.rt.WorkspaceDir)
+		s.printfOut("user:      %s\nworkspace: %s\n", userPath, wsPath)
+		return nil
+
+	default:
+		return fmt.Errorf("usage: /config [show|save|path]")
+	}
+}
+
+func (s *sessionState) saveSessionConfig() error {
+	snap := s.rt.SnapshotSessionConfig()
+	savedPath, err := config.SaveUserSessionConfig(s.rt.UserHome, snap)
+	if err != nil {
+		return fmt.Errorf("save session configuration: %w", err)
+	}
+
+	dispModel := snap.Model
+	if dispModel == "" {
+		dispModel = "auto"
+	}
+	compatLabel := "off"
+	if snap.Compatibility.LoadCopilotInstructions || snap.Compatibility.LoadCopilotSkills {
+		compatLabel = "on"
+	}
+	s.printfOut(
+		"Saved session configuration to %s (provider=%s, model=%s, mode=%s, compat=%s).\n",
+		savedPath,
+		snap.Provider,
+		dispModel,
+		snap.ApprovalPolicy,
+		compatLabel,
+	)
+
+	if s.rt.Gate != nil && s.rt.Gate.Policy() != snap.ApprovalPolicy {
+		s.printfErr(
+			"[note] temporary prompt approval (%q) was not persisted; saved approval_policy=%s (use '/mode %s --save' to persist it).\n",
+			s.rt.Gate.Policy(),
+			snap.ApprovalPolicy,
+			s.rt.Gate.Policy(),
+		)
+	}
+	if s.rt.HasAPIKeyOverride() || strings.TrimSpace(os.Getenv("CODER_API_KEY")) != "" {
+		s.printfErr("[note] transient API key from --api-key / CODER_API_KEY was omitted from %s.\n", savedPath)
+	}
+
+	nextCfg, err := s.rt.NextSessionConfig()
+	if err != nil {
+		s.printfErr("[note] could not verify next-session precedence: %v\n", err)
+	} else if shadowed := config.ShadowedFields(nextCfg, snap); len(shadowed) > 0 {
+		s.printfErr(
+			"[note] saved user profile settings are overridden in this workspace/environment (%s). Check workspace .coder/config.json and CODER_* environment variables.\n",
+			strings.Join(shadowed, ", "),
+		)
+	}
+	return nil
 }
 
 func (s *sessionState) cmdLogin(ctx context.Context, args []string) error {
@@ -224,9 +329,12 @@ func (s *sessionState) cmdModel(ctx context.Context, args []string) error {
 	}
 	targetModel := args[0]
 	save := len(args) == 2
-	if save {
-		if s.rt.Provider == nil || !strings.EqualFold(s.rt.Agent.ProviderName(), "copilot") {
-			return fmt.Errorf("/model --save requires the active Copilot provider")
+	provName := s.rt.Agent.ProviderName()
+	isCopilot := strings.EqualFold(provName, "copilot")
+
+	if save && isCopilot {
+		if s.rt.Provider == nil {
+			return fmt.Errorf("/model --save requires an initialized provider")
 		}
 		listCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
@@ -244,30 +352,56 @@ func (s *sessionState) cmdModel(ctx context.Context, args []string) error {
 		if !found {
 			return fmt.Errorf("Copilot model %q is not available; use /model list", targetModel)
 		}
+	} else if save && s.rt.Provider != nil {
+		listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if models, err := s.rt.Provider.ListModels(listCtx); err == nil {
+			for _, m := range models {
+				if strings.EqualFold(m.ID, targetModel) {
+					targetModel = m.ID
+					break
+				}
+			}
+		}
+		cancel()
 	}
+
 	if err := s.rt.Agent.SetModel(ctx, targetModel); err != nil {
 		return err
 	}
-	s.printfOut("Switched model to %s (provider: %s)\n", s.rt.Agent.Model(), s.rt.Agent.ProviderName())
+	if s.rt.Config != nil {
+		if key, existing, ok := s.rt.Config.LookupProvider(provName); ok {
+			existing.DefaultModel = s.rt.Agent.ConfiguredModel()
+			s.rt.Config.Providers[key] = existing
+		}
+	}
+	s.printfOut("Switched model to %s (provider: %s)\n", s.rt.Agent.Model(), provName)
 	if !save {
 		return nil
 	}
-	path, err := config.SaveUserCopilotModel(s.rt.UserHome, targetModel)
+	path, err := config.SaveUserProviderModel(s.rt.UserHome, provName, targetModel)
 	if err != nil {
 		return fmt.Errorf("model switched for this session, but could not save default: %w", err)
 	}
-	s.printfOut("Saved Copilot default %s to %s.\n", targetModel, path)
+	if isCopilot {
+		s.printfOut("Saved Copilot default %s to %s.\n", targetModel, path)
+	} else {
+		s.printfOut("Saved %s default model %s to %s.\n", provName, targetModel, path)
+	}
 	cfg, err := s.rt.StartupConfig()
 	if err != nil {
 		s.printfErr("[note] could not check whether the saved default is overridden: %v\n", err)
-	} else if !strings.EqualFold(cfg.DefaultProvider, "copilot") || !strings.EqualFold(cfg.EffectiveModel("copilot"), targetModel) {
-		s.printfErr("[note] the saved Copilot default is overridden by current startup settings (provider: %s, model: %q). Check top-level and workspace config, environment variables, and CLI flags.\n", cfg.DefaultProvider, cfg.EffectiveModel(cfg.DefaultProvider))
+	} else if !strings.EqualFold(cfg.DefaultProvider, provName) || !strings.EqualFold(cfg.EffectiveModel(provName), targetModel) {
+		s.printfErr("[note] the saved %s default is overridden by current startup settings (provider: %s, model: %q). Check top-level and workspace config, environment variables, and CLI flags.\n", provName, cfg.DefaultProvider, cfg.EffectiveModel(cfg.DefaultProvider))
 	}
 	return nil
 }
 
 func (s *sessionState) cmdProvider(_ context.Context, args []string) error {
-	if len(args) == 0 || strings.EqualFold(args[0], "list") {
+	cleaned, save, err := extractSaveFlag(args)
+	if err != nil || len(cleaned) > 2 || (save && (len(cleaned) == 0 || strings.EqualFold(cleaned[0], "list"))) {
+		return fmt.Errorf("usage: /provider [list|<name> [model] [--save]]")
+	}
+	if len(cleaned) == 0 || strings.EqualFold(cleaned[0], "list") {
 		curProv := s.rt.Agent.ProviderName()
 		curModel := s.rt.Agent.Model()
 		s.printfOut("Active provider: %s (model: %s)\n", curProv, curModel)
@@ -301,21 +435,18 @@ func (s *sessionState) cmdProvider(_ context.Context, args []string) error {
 		return nil
 	}
 
-	targetProv := strings.TrimSpace(args[0])
+	targetProv := strings.TrimSpace(cleaned[0])
 	var modelOverride string
-	if len(args) > 1 {
-		modelOverride = strings.TrimSpace(args[1])
+	if len(cleaned) > 1 {
+		modelOverride = strings.TrimSpace(cleaned[1])
 	}
 	if err := s.rt.SwitchProvider(targetProv, modelOverride); err != nil {
 		return err
 	}
-	if s.rt.Config != nil {
-		s.rt.Config.DefaultProvider = s.rt.Agent.ProviderName()
-		if modelOverride != "" {
-			s.rt.Config.DefaultModel = modelOverride
-		}
-	}
 	s.printfOut("Switched provider to %s (model: %s)\n", s.rt.Agent.ProviderName(), s.rt.Agent.Model())
+	if save {
+		return s.saveSessionConfig()
+	}
 	return nil
 }
 
@@ -444,12 +575,16 @@ func (s *sessionState) cmdMode(args []string) error {
 	if s.rt.Gate == nil {
 		return fmt.Errorf("permission gate is not initialized")
 	}
-	if len(args) == 0 {
+	cleaned, save, err := extractSaveFlag(args)
+	if err != nil || len(cleaned) > 1 || (save && len(cleaned) == 0) {
+		return fmt.Errorf("usage: /mode [smart_auto|full_auto|strict_ask] [--save]")
+	}
+	if len(cleaned) == 0 {
 		s.printfOut("Approval policy: %s\n", s.rt.Gate.Policy())
 		return nil
 	}
 
-	raw := strings.ToLower(strings.TrimSpace(args[0]))
+	raw := strings.ToLower(strings.TrimSpace(cleaned[0]))
 	var policy types.ApprovalPolicy
 	switch raw {
 	case string(types.ApprovalSmartAuto):
@@ -459,7 +594,7 @@ func (s *sessionState) cmdMode(args []string) error {
 	case string(types.ApprovalStrictAsk), "safe":
 		policy = types.ApprovalStrictAsk
 	default:
-		return fmt.Errorf("invalid mode %q (expected smart_auto, full_auto, or strict_ask)", args[0])
+		return fmt.Errorf("invalid mode %q (expected smart_auto, full_auto, or strict_ask)", cleaned[0])
 	}
 
 	s.rt.Gate.SetPolicy(policy)
@@ -467,6 +602,9 @@ func (s *sessionState) cmdMode(args []string) error {
 		s.rt.Config.ApprovalPolicy = policy
 	}
 	s.printfOut("Approval policy set to %s\n", policy)
+	if save {
+		return s.saveSessionConfig()
+	}
 	return nil
 }
 
@@ -474,7 +612,11 @@ func (s *sessionState) cmdCompat(ctx context.Context, args []string) error {
 	if s.rt.Config == nil {
 		return fmt.Errorf("runtime configuration is nil")
 	}
-	if len(args) == 0 {
+	cleaned, save, err := extractSaveFlag(args)
+	if err != nil || len(cleaned) > 1 || (save && len(cleaned) == 0) {
+		return fmt.Errorf("usage: /compat [on|off] [--save]")
+	}
+	if len(cleaned) == 0 {
 		state := "off"
 		if s.rt.Config.Compatibility.LoadCopilotInstructions || s.rt.Config.Compatibility.LoadCopilotSkills {
 			state = "on"
@@ -490,13 +632,13 @@ func (s *sessionState) cmdCompat(ctx context.Context, args []string) error {
 	}
 
 	var enabled bool
-	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	switch strings.ToLower(strings.TrimSpace(cleaned[0])) {
 	case "on", "true", "1", "yes":
 		enabled = true
 	case "off", "false", "0", "no":
 		enabled = false
 	default:
-		return fmt.Errorf("invalid /compat value %q (expected on or off)", args[0])
+		return fmt.Errorf("invalid /compat value %q (expected on or off)", cleaned[0])
 	}
 
 	s.rt.Config.Compatibility.LoadCopilotInstructions = enabled
@@ -546,6 +688,9 @@ func (s *sessionState) cmdCompat(ctx context.Context, args []string) error {
 		skillCount,
 		customToolCount,
 	)
+	if save {
+		return s.saveSessionConfig()
+	}
 	return nil
 }
 

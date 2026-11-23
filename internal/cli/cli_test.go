@@ -540,3 +540,71 @@ func TestCLIDoctorAndBenchDelegation(t *testing.T) {
 		t.Errorf("bench stdout = %q", stdout.String())
 	}
 }
+
+func TestCLIConfigSavePersistsForNextSession(t *testing.T) {
+	clearTestEnv(t)
+	ws := t.TempDir()
+	home := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := ExecuteWithOptions(RunOptions{
+		Args: []string{
+			"-C", ws,
+			"-p", "ollama",
+			"-m", "qwen2.5-coder:32b",
+			"--base-url", "http://127.0.0.1:11435/v1",
+			"--api-key", "sk-do-not-write-to-disk",
+			"--safe",
+			"--no-copilot-compat",
+			"--stream",
+			"--max-steps", "50",
+			"config", "save",
+		},
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+		UserHome: home,
+	})
+	if code != 0 {
+		t.Fatalf("coder config save failed (%d): %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Saved configuration to") {
+		t.Fatalf("expected save confirmation, got: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "transient API key") {
+		t.Fatalf("expected transient API key omission note, got: %s", stderr.String())
+	}
+
+	userCfgPath, err := config.UserConfigPath(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawDisk, err := os.ReadFile(userCfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawDisk), "sk-do-not-write-to-disk") {
+		t.Fatalf("SECURITY LEAK: coder config save wrote --api-key to disk:\n%s", string(rawDisk))
+	}
+
+	// Verify `coder config show` with NO flags reflects the saved user profile!
+	stdout.Reset()
+	stderr.Reset()
+	code = ExecuteWithOptions(RunOptions{
+		Args:     []string{"-C", ws, "config", "show"},
+		Stdout:   &stdout,
+		Stderr:   &stderr,
+		UserHome: home,
+	})
+	if code != 0 {
+		t.Fatalf("coder config show failed (%d): %s", code, stderr.String())
+	}
+	var shown config.Config
+	if err := json.Unmarshal(stdout.Bytes(), &shown); err != nil {
+		t.Fatalf("unmarshal config show: %v", err)
+	}
+	if shown.DefaultProvider != "ollama" || shown.EffectiveModel("ollama") != "qwen2.5-coder:32b" ||
+		shown.ApprovalPolicy != types.ApprovalStrictAsk || !shown.Streaming || shown.MaxSteps != 50 ||
+		shown.Compatibility.LoadCopilotInstructions || shown.Compatibility.LoadCopilotSkills {
+		t.Fatalf("saved config did not persist expected values: %+v", shown)
+	}
+}

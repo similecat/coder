@@ -35,6 +35,7 @@ type Agent struct {
 	mu                 sync.Mutex
 	provider           types.Provider
 	model              string
+	configuredModel    string
 	systemPrompt       string
 	promptBuilder      func() string
 	tools              []types.Tool
@@ -78,6 +79,7 @@ func New(opts Options) (*Agent, error) {
 	a := &Agent{
 		provider:           opts.Provider,
 		model:              model,
+		configuredModel:    model,
 		systemPrompt:       opts.SystemPrompt,
 		promptBuilder:      opts.PromptBuilder,
 		workingDir:         opts.WorkingDir,
@@ -117,6 +119,14 @@ func (a *Agent) Model() string {
 	return a.model
 }
 
+// ConfiguredModel returns the explicitly configured or user-selected model ID,
+// unaffected by dynamic per-turn backend routing (such as Copilot Auto resolution).
+func (a *Agent) ConfiguredModel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.configuredModel
+}
+
 // ProviderName returns the active provider's name.
 func (a *Agent) ProviderName() string {
 	a.mu.Lock()
@@ -132,6 +142,7 @@ func (a *Agent) SetModel(ctx context.Context, model string) error {
 	}
 	a.mu.Lock()
 	a.model = model
+	a.configuredModel = model
 	ms := a.managedSession
 	a.mu.Unlock()
 
@@ -163,6 +174,7 @@ func (a *Agent) SetProvider(prov types.Provider, model string) error {
 	} else {
 		a.model = prov.DefaultModel()
 	}
+	a.configuredModel = a.model
 	a.mu.Unlock()
 
 	if oldMS != nil {
